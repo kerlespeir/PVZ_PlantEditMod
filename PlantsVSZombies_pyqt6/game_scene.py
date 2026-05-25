@@ -10,6 +10,7 @@ from seed import Seed
 from sun import MySun
 from ui_helpers import ImageButton, ImageDialog, asset
 from zombies import Zombie, make_zombie
+from plants.cpp_bridge import CppPlantLoader, GameAPIAdapter, PlantInstance
 
 
 class GameScene(QWidget):
@@ -22,9 +23,9 @@ class GameScene(QWidget):
         self.setFixedSize(960, 720)
 
         self.sun_num = 100
-        self.sun_sequence = [50, 100, 50, 25, 200]
-        self.cooldown_sequence = [7500, 7500, 30000, 30000, 7500]
-        self.name_sequence = ["SunFlower", "Peashooter", "WallNut", "PotatoMine", "Repeater"]
+        self.default_sun_sequence = [50, 100, 50, 25, 200]
+        self.default_cooldown_sequence = [7500, 7500, 30000, 30000, 7500]
+        self.default_name_sequence = ["SunFlower", "Peashooter", "WallNut", "PotatoMine", "Repeater"]
         self.is_planting = -1
 
         self.fc_raw = [0, 3, 2, 1, 2, 4, 0, 3, 1, 4]
@@ -43,9 +44,14 @@ class GameScene(QWidget):
         self.ylimit = [98, 217, 328, 446, 567, 680]
         self._timers: list[QTimer] = []
         self._game_over = False
+        self.game_time = 0
+        self.plant_instances: dict[tuple[int, int], PlantInstance] = {}
+        self.plant_loader = CppPlantLoader(self.base_dir / "plugins" / "plants")
+        self.plant_plugins = self.plant_loader.load_all()
+        self.api_adapter = GameAPIAdapter(self)
 
         self._build_hud()
-        self.monitor_timer = self._timer(10, self.monitor_zombies)
+        self.monitor_timer = self._timer(10, self.game_tick)
         self.create_timer = self._timer(8000, self.create_zombie_tick)
         self.monitor_timer.stop()
         self.create_timer.stop()
@@ -73,11 +79,16 @@ class GameScene(QWidget):
 
         self.seed_bank: list[Seed] = []
         for i in range(5):
+            plant_type = i + 1
+            plugin = self.plant_plugins.get(plant_type)
+            sun_cost = plugin.sun_cost if plugin else self.default_sun_sequence[i]
+            cooldown = plugin.cooldown_ms if plugin else self.default_cooldown_sequence[i]
+            plant_name = plugin.name if plugin else self.default_name_sequence[i]
             seed = Seed(
                 self.base_dir,
-                self.cooldown_sequence[i],
-                self.sun_sequence[i],
-                asset(self.base_dir, "res", f"{self.name_sequence[i]}.png"),
+                cooldown,
+                sun_cost,
+                asset(self.base_dir, "res", f"{plant_name}.png"),
                 bank,
             )
             seed.checksun(self.sun_num)
@@ -158,10 +169,12 @@ class GameScene(QWidget):
             return super().mousePressEvent(event)
         if self.is_planting >= 0:
             seed_index = self.is_planting
-            if self.visited(event.position().x(), event.position().y()):
-                plant_type = seed_index + 1
-                self.create_plant(plant_type)
-                self.born(plant_type)
+            if not self.visited(event.position().x(), event.position().y()):
+                return super().mousePressEvent(event)
+            plant_type = seed_index + 1
+            if not self.born(plant_type):
+                self.cancel_cursor()
+                return
             self.sun_num -= self.seed_bank[seed_index].sun
             self.update_sun()
             self.seed_bank[seed_index].cdstart()
@@ -175,7 +188,7 @@ class GameScene(QWidget):
             while j < len(self.ylimit) and event.position().y() >= self.ylimit[j]:
                 j += 1
             if 0 <= i < 10 and 0 <= j < 6 and self.map[i][j]:
-                self.plt_hp[i][j] = 0
+                self.remove_plant(i, j)
 
     def cancel_cursor(self) -> None:
         self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -215,17 +228,13 @@ class GameScene(QWidget):
     def create_plant(self, plant_type: int) -> None:
         px = self.xtrans()
         py = self.ytrans()
-        if plant_type == 3:
+        plugin = self.plant_plugins.get(plant_type)
+        if not plugin:
             return
         label = QLabel(self)
         label.resize(63, 70)
         label.move(px - 5, py - 5)
-        gif_name = {
-            1: "SunFlower.gif",
-            2: "Peashooter.gif",
-            4: "PotatoMine1.gif",
-            5: "Repeater.gif",
-        }[plant_type]
+        gif_name = plugin.image
         if plant_type == 4:
             label.resize(74, 53)
             label.move(px - 5, py + 10)
@@ -236,42 +245,17 @@ class GameScene(QWidget):
         label.show()
         self.pic[self.clix][self.cliy] = label
 
-    def born(self, plant_type: int) -> None:
+    def born(self, plant_type: int) -> bool:
+        plugin = self.plant_plugins.get(plant_type)
+        if not plugin:
+            return False
+        self.create_plant(plant_type)
+        handle = plugin.create(self.cliy, self.clix)
+        instance = PlantInstance(plugin, handle, self.cliy, self.clix, plant_type, plugin.image)
+        self.plant_instances[(self.clix, self.cliy)] = instance
         self.map[self.clix][self.cliy] = plant_type
-        if plant_type == 1:
-            self.born_sunflower()
-        elif plant_type == 2:
-            self.born_peashooter(repeater=False)
-        elif plant_type == 3:
-            self.born_wallnut()
-        elif plant_type == 4:
-            self.born_potato()
-        elif plant_type == 5:
-            self.born_peashooter(repeater=True)
-
-    def plant_death_timer(self, cx: int, cy: int, on_death=None) -> QTimer:
-        timer = self._timer(33, lambda: None)
-        timer.timeout.disconnect()
-
-        def check() -> None:
-            if self.plt_hp[cx][cy] <= 0:
-                timer.stop()
-                self.plt_hp[cx][cy] = 0
-                self.map[cx][cy] = 0
-                if on_death:
-                    on_death()
-                if self.pic[cx][cy]:
-                    self.pic[cx][cy].deleteLater()
-                    self.pic[cx][cy] = None
-
-        timer.timeout.connect(check)
-        return timer
-
-    def born_sunflower(self) -> None:
-        self.plt_hp[self.clix][self.cliy] = 300
-        xx, yy, cx, cy = self.xtrans(), self.ytrans(), self.clix, self.cliy
-        sun_timer = self._timer(10000, lambda: self.create_sun(xx, yy))
-        self.plant_death_timer(cx, cy, sun_timer.stop)
+        self.plt_hp[self.clix][self.cliy] = instance.hp
+        return True
 
     def create_sun(self, xx: int, yy: int) -> None:
         sun = MySun(self.base_dir, self)
@@ -292,24 +276,11 @@ class GameScene(QWidget):
         sun.hide()
         sun.deleteLater()
 
-    def born_peashooter(self, repeater: bool) -> None:
-        self.plt_hp[self.clix][self.cliy] = 300
-        xx, yy, cx, cy = self.xtrans(), self.ytrans(), self.clix, self.cliy
-
-        def shoot_tick() -> None:
-            if self.pea_detect(xx, cy):
-                self.launch_pea(xx, yy, cy)
-                if repeater:
-                    QTimer.singleShot(300, lambda: self.launch_pea(xx, yy, cy))
-
-        shoot_timer = self._timer(2000, shoot_tick)
-        self.plant_death_timer(cx, cy, shoot_timer.stop)
-
-    def launch_pea(self, xx: int, yy: int, cy: int) -> None:
+    def launch_pea(self, xx: int, yy: int, cy: int, snow: bool = False) -> None:
         pea = QLabel(self)
         pea.resize(25, 25)
         pea.move(xx + 40, yy + 2)
-        pea.setPixmap(QPixmap(asset(self.base_dir, "plantimages", "Pea.png")))
+        pea.setPixmap(QPixmap(asset(self.base_dir, "plantimages", "PeaSnow.png" if snow else "Pea.png")))
         pea.show()
         timer = self._timer(33, lambda: None)
         timer.timeout.disconnect()
@@ -322,27 +293,139 @@ class GameScene(QWidget):
 
         timer.timeout.connect(step)
 
-    def born_wallnut(self) -> None:
-        px, py, cx, cy = self.xtrans(), self.ytrans(), self.clix, self.cliy
-        self.plt_hp[cx][cy] = 4000
-        label = self.set_plant_movie("WallNut.gif", px - 5, py - 5, 63, 70)
-        self.pic[cx][cy] = label
-        state = {"value": 1}
+    def game_tick(self) -> None:
+        if self._game_over:
+            return
+        self.game_time += 1
+        self.update_plants()
+        self.monitor_zombies()
 
-        def check() -> None:
-            hp = self.plt_hp[cx][cy]
+    def update_plants(self) -> None:
+        for (col, row), plant in list(self.plant_instances.items()):
+            if self.map[col][row] == 0 or self.plt_hp[col][row] <= 0:
+                self.remove_plant(col, row)
+                continue
+            plant.set_hp(self.plt_hp[col][row])
+            plant.update(self.api_adapter.c_api)
+            if (col, row) not in self.plant_instances:
+                continue
+            hp = plant.hp
+            self.plt_hp[col][row] = hp
             if hp <= 0:
-                timer.stop()
-                self.map[cx][cy] = 0
-                label.deleteLater()
-            elif 1333 <= hp <= 2666 and state["value"] == 1:
-                state["value"] = 2
-                self.replace_pic(cx, cy, "WallNut1.gif", px - 5, py - 5, 63, 70)
-            elif hp < 1333 and state["value"] == 2:
-                state["value"] = 3
-                self.replace_pic(cx, cy, "WallNut2.gif", px - 5, py - 5, 63, 70)
+                self.remove_plant(col, row)
 
-        timer = self._timer(33, check)
+    def remove_plant(self, col: int, row: int, delete_pic: bool = True) -> None:
+        plant = self.plant_instances.pop((col, row), None)
+        if plant:
+            plant.destroy()
+        self.plt_hp[col][row] = 0
+        self.map[col][row] = 0
+        if delete_pic and self.pic[col][row]:
+            self.pic[col][row].deleteLater()
+            self.pic[col][row] = None
+
+    def cell_x(self, col: int) -> int:
+        return {1: 70, 2: 165, 3: 265, 4: 360, 5: 455, 6: 555, 7: 650, 8: 745, 9: 845}[col]
+
+    def cell_y(self, row: int) -> int:
+        return {1: 120, 2: 240, 3: 360, 4: 480, 5: 600}[row]
+
+    def valid_cell(self, row: int, col: int) -> bool:
+        return 1 <= row <= 5 and 1 <= col <= 9
+
+    def api_get_hp(self, row: int, col: int) -> int:
+        if not self.valid_cell(row, col):
+            return 0
+        return self.plt_hp[col][row]
+
+    def api_get_zombie_count(self, row: int) -> int:
+        if not 1 <= row <= 5:
+            return 0
+        return sum(1 for zombie in self.zombies if zombie.y() == self.raw_h[row - 1] and zombie.hp > 0)
+
+    def api_count_zombies_ahead(self, row: int, col: int) -> int:
+        if not self.valid_cell(row, col):
+            return 0
+        x = self.cell_x(col)
+        return sum(1 for zombie in self.zombies if zombie.y() == self.raw_h[row - 1] and zombie.x() + 100 > x and zombie.hp > 0)
+
+    def api_nearest_zombie_x(self, row: int, col: int) -> int:
+        if not self.valid_cell(row, col):
+            return -1
+        x = self.cell_x(col)
+        candidates = [zombie.x() for zombie in self.zombies if zombie.y() == self.raw_h[row - 1] and zombie.x() + 100 > x and zombie.hp > 0]
+        return min(candidates) if candidates else -1
+
+    def api_if_zombies_ahead(self, row: int, col: int) -> bool:
+        if not self.valid_cell(row, col):
+            return False
+        return self.pea_detect(self.cell_x(col), row)
+
+    def api_if_zombies_touch(self, row: int, col: int) -> bool:
+        if not self.valid_cell(row, col):
+            return False
+        x = self.cell_x(col)
+        return any(
+            zombie.y() == self.raw_h[row - 1]
+            and zombie.hp > 0
+            and (zombie.mx == col or abs(x - (zombie.x() + 200)) <= 90)
+            for zombie in self.zombies
+        )
+
+    def api_is_cell_empty(self, row: int, col: int) -> bool:
+        return self.valid_cell(row, col) and self.map[col][row] == 0
+
+    def api_shoot_pea(self, row: int, col: int, number: int, snow: bool = False) -> None:
+        if not self.valid_cell(row, col):
+            return
+        x, y = self.cell_x(col), self.cell_y(row)
+        for idx in range(max(0, number)):
+            QTimer.singleShot(300 * idx, lambda x=x, y=y, row=row, snow=snow: self.launch_pea(x, y, row, snow))
+
+    def api_raise_sun(self, row: int, col: int) -> None:
+        if self.valid_cell(row, col):
+            self.create_sun(self.cell_x(col), self.cell_y(row))
+
+    def api_change_animation(self, row: int, col: int, animation_name: str) -> None:
+        if not self.valid_cell(row, col) or self.map[col][row] == 0:
+            return
+        x, y = self.cell_x(col), self.cell_y(row)
+        width, height = (74, 53) if animation_name.startswith("PotatoMine") else (63, 70)
+        y_offset = 10 if animation_name.startswith("PotatoMine") else -5
+        self.replace_pic(col, row, animation_name, x - 5, y + y_offset, width, height)
+
+    def api_set_hp(self, row: int, col: int, hp: int) -> None:
+        if self.valid_cell(row, col):
+            hp = max(0, hp)
+            self.plt_hp[col][row] = hp
+            plant = self.plant_instances.get((col, row))
+            if plant:
+                plant.set_hp(hp)
+
+    def api_damage_self(self, row: int, col: int, amount: int) -> None:
+        if self.valid_cell(row, col):
+            self.api_set_hp(row, col, self.plt_hp[col][row] - max(0, amount))
+
+    def api_explode(self, row: int, col: int) -> None:
+        self.api_explode_area(row, col, 1, 5000)
+
+    def api_explode_area(self, row: int, col: int, radius: int, damage: int) -> None:
+        if not self.valid_cell(row, col):
+            return
+        x = self.cell_x(col)
+        for zombie in self.zombies:
+            same_row = zombie.y() == self.raw_h[row - 1]
+            in_radius = abs(x - (zombie.x() + 200)) <= max(1, radius) * 200
+            if same_row and in_radius:
+                zombie.get_hurt(damage, True)
+        y = self.cell_y(row)
+        self.api_set_hp(row, col, 0)
+        self.map[col][row] = 0
+        if self.pic[col][row]:
+            self.pic[col][row].deleteLater()
+            self.pic[col][row] = None
+        boom = self.set_plant_movie("PotatoMineBomb.gif", x - 5, y + 10, 74, 53)
+        QTimer.singleShot(1000, boom.deleteLater)
 
     def set_plant_movie(self, gif: str, x: int, y: int, w: int, h: int) -> QLabel:
         label = QLabel(self)
@@ -359,37 +442,6 @@ class GameScene(QWidget):
         if self.pic[cx][cy]:
             self.pic[cx][cy].deleteLater()
         self.pic[cx][cy] = self.set_plant_movie(gif, x, y, w, h)
-
-    def born_potato(self) -> None:
-        self.plt_hp[self.clix][self.cliy] = 300
-        xx, yy, cx, cy = self.xtrans(), self.ytrans(), self.clix, self.cliy
-        death = self.plant_death_timer(cx, cy)
-
-        def mature() -> None:
-            if self.map[cx][cy] != 4:
-                return
-            if self.pic[cx][cy]:
-                self.pic[cx][cy].deleteLater()
-            self.pic[cx][cy] = self.set_plant_movie("PotatoMine.gif", xx - 5, yy + 10, 74, 53)
-            self.plt_hp[cx][cy] = 50000
-            death.stop()
-            boom_timer = self._timer(33, lambda: None)
-            boom_timer.timeout.disconnect()
-
-            def boom_check() -> None:
-                if self.potato_detect(xx, cy):
-                    boom_timer.stop()
-                    self.plt_hp[cx][cy] = 0
-                    self.map[cx][cy] = 0
-                    if self.pic[cx][cy]:
-                        self.pic[cx][cy].deleteLater()
-                        self.pic[cx][cy] = None
-                    boom = self.set_plant_movie("PotatoMineBomb.gif", xx - 5, yy + 10, 74, 53)
-                    QTimer.singleShot(1000, boom.deleteLater)
-
-            boom_timer.timeout.connect(boom_check)
-
-        QTimer.singleShot(15000, mature)
 
     def born_zombie(self, number: int, raw: int) -> None:
         if len(self.zombies) >= self.max_number:
@@ -439,13 +491,6 @@ class GameScene(QWidget):
     def pea_detect(self, x: int, y: int) -> bool:
         return any(self.raw_h[y - 1] == zombie.y() and zombie.x() + 100 > x for zombie in self.zombies)
 
-    def potato_detect(self, x: int, y: int) -> bool:
-        for zombie in self.zombies:
-            if self.raw_h[y - 1] == zombie.y() and abs(x - (zombie.x() + 200)) <= 200:
-                zombie.get_hurt(5000, True)
-                return True
-        return False
-
     def pwin(self) -> None:
         if self._game_over:
             return
@@ -488,3 +533,6 @@ class GameScene(QWidget):
             timer.stop()
         for zombie in self.zombies:
             zombie.stop()
+        for plant in list(self.plant_instances.values()):
+            plant.destroy()
+        self.plant_instances.clear()

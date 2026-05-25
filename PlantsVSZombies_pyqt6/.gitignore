@@ -1,3 +1,7 @@
 __pycache__/
 *.py[cod]
 .DS_Store
+cpp_plants/build/
+plugins/plants/*.dylib
+plugins/plants/*.so
+plugins/plants/*.dll
