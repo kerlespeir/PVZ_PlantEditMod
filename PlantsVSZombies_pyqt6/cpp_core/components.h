@@ -45,7 +45,7 @@ public:
     virtual void step(GameAPI& api, HybridPlant* owner){
         if (owner->timer % time_prd ==0){
             // 制造amount个阳光, 十分原始地使用了 for 循环
-            for (int i=0;i++;i<amount){api.raise_sun(owner->row, owner->col);}
+            for (int i=0;i<amount;i++){api.raise_sun(owner->row, owner->col);}
         }
     }
 };
