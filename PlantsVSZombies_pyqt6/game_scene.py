@@ -49,6 +49,7 @@ class GameScene(QWidget):
         self.plant_loader = CppPlantLoader(self.base_dir / "plugins" / "plants")
         self.plant_plugins = self.plant_loader.load_all()
         self.api_adapter = GameAPIAdapter(self)
+        self.seed_plant_ids: list[int] = sorted(self.plant_plugins.keys())
 
         self._build_hud()
         self.monitor_timer = self._timer(10, self.game_tick)
@@ -65,6 +66,9 @@ class GameScene(QWidget):
 
     def _build_hud(self) -> None:
         bank_pix = QPixmap(asset(self.base_dir, "res", "Shop.png"))
+        num_seeds = len(self.seed_plant_ids)
+        bank_width = max(bank_pix.width(), 67 + 55 * num_seeds + 10)
+        bank_pix = bank_pix.scaled(bank_width, bank_pix.height())
         bank = QLabel(self)
         bank.resize(bank_pix.size())
         bank.setPixmap(bank_pix)
@@ -78,12 +82,11 @@ class GameScene(QWidget):
         self.sun_label.show()
 
         self.seed_bank: list[Seed] = []
-        for i in range(5):
-            plant_type = i + 1
-            plugin = self.plant_plugins.get(plant_type)
-            sun_cost = plugin.sun_cost if plugin else self.default_sun_sequence[i]
-            cooldown = plugin.cooldown_ms if plugin else self.default_cooldown_sequence[i]
-            plant_name = plugin.name if plugin else self.default_name_sequence[i]
+        for i, plant_id in enumerate(self.seed_plant_ids):
+            plugin = self.plant_plugins[plant_id]
+            sun_cost = plugin.sun_cost
+            cooldown = plugin.cooldown_ms
+            plant_name = plugin.name
             seed = Seed(
                 self.base_dir,
                 cooldown,
@@ -171,7 +174,7 @@ class GameScene(QWidget):
             seed_index = self.is_planting
             if not self.visited(event.position().x(), event.position().y()):
                 return super().mousePressEvent(event)
-            plant_type = seed_index + 1
+            plant_type = self.seed_plant_ids[seed_index]
             if not self.born(plant_type):
                 self.cancel_cursor()
                 return
@@ -235,7 +238,7 @@ class GameScene(QWidget):
         label.resize(63, 70)
         label.move(px - 5, py - 5)
         gif_name = plugin.image
-        if plant_type == 4:
+        if gif_name.startswith("PotatoMine"):
             label.resize(74, 53)
             label.move(px - 5, py + 10)
         movie = QMovie(asset(self.base_dir, "plantimages", gif_name), parent=label)

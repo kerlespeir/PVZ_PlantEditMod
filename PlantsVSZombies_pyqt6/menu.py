@@ -11,6 +11,7 @@ from ui_helpers import ImageButton, asset
 
 class MainMenu(QWidget):
     play = pyqtSignal()
+    editor_clicked = pyqtSignal()
     ready_for_quit = pyqtSignal()
     help_clicked = pyqtSignal()
     option_clicked = pyqtSignal()
@@ -38,7 +39,7 @@ class MainMenu(QWidget):
 
         challenge = ImageButton(self.base_dir, asset(self.base_dir, "res", "SelectorScreen_Challenges_button.png"), parent=self)
         challenge.move(520, 334)
-        challenge.clicked.connect(lambda checked=False: self.unable_clicked.emit())
+        challenge.clicked.connect(lambda checked=False: self.editor_clicked.emit())
 
         vase = ImageButton(self.base_dir, asset(self.base_dir, "res", "SelectorScreen_Vasebreaker_button.png"), parent=self)
         vase.move(520, 410)

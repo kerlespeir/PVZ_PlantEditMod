@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QLabel, QMainWindow, QStackedWidget
 
 from game_scene import GameScene
 from menu import MainMenu
+from plant_editor import PlantEditorScene
 from ui_helpers import ImageButton, ImageDialog, asset
 
 
@@ -24,10 +25,12 @@ class MainWindow(QMainWindow):
         self.menu = MainMenu(base_dir)
         self.stack.addWidget(self.menu)
         self.game: GameScene | None = None
+        self.editor: PlantEditorScene | None = None
         self._connect_menu()
 
     def _connect_menu(self) -> None:
         self.menu.play.connect(self.start_game)
+        self.menu.editor_clicked.connect(self.open_editor)
         self.menu.ready_for_quit.connect(self.show_quit)
         self.menu.help_clicked.connect(self.show_help)
         self.menu.option_clicked.connect(lambda: self.show_simple_dialog("Options.png", "yesButton.png", 540))
@@ -35,6 +38,19 @@ class MainWindow(QMainWindow):
 
     def center_widget(self, widget) -> None:
         widget.move((self.width() - widget.width()) // 2, (self.height() - widget.height()) // 2)
+
+    def open_editor(self) -> None:
+        self.editor = PlantEditorScene(self.base_dir)
+        self.stack.addWidget(self.editor)
+        self.stack.setCurrentWidget(self.editor)
+        self.editor.back_to_menu.connect(self.close_editor)
+
+    def close_editor(self) -> None:
+        if self.editor is not None:
+            self.stack.setCurrentWidget(self.menu)
+            self.stack.removeWidget(self.editor)
+            self.editor.deleteLater()
+            self.editor = None
 
     def show_quit(self) -> None:
         dialog = ImageDialog(asset(self.base_dir, "res", "QuitWindow.png"), self)
