@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import re
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -18,104 +19,83 @@ from PyQt6.QtWidgets import (
 )
 
 from syntax_highlighter import CppHighlighter
-from image_composer import compose_plant_image
-from plants.cpp_bridge import CppPlantLoader
+from image_composer import component_image_path, compose_plant_image
+from custom_plant_store import (
+    cleanup_orphan_custom_assets,
+    create_or_update_record,
+    draft_components_path,
+    draft_plant_path,
+    normalize_components_source,
+    normalize_plant_source,
+    parse_registration,
+    plant_image_name,
+    PlantRecord,
+)
 from ui_helpers import asset
 
 
-COMPONENTS_HEADER = '''\
-// ===== components.h (只读) =====
-// 可用组件一览，不可编辑
+MODE_LABELS = {
+    "A": "玩法 A：组合官方组件",
+    "B": "玩法 B：编辑组件并组合植物",
+}
 
-#pragma once
-#include "hybrid_plant.h"
-#include <cmath>
-#include <memory>
 
-class Component {
+def default_plant_template(mode: str) -> str:
+    include_name = "../cpp_core/components.h" if mode == "A" else "mode_b_components.h"
+    class_name = "MyHybridPlantA" if mode == "A" else "MyHybridPlantB"
+    plant_id = 200 if mode == "A" else 201
+    return f'''\\
+#include "{include_name}"
+
+class {class_name} : public HybridPlant {{
 public:
-    Component(int cost, int cooldown, int hp);
-    virtual ~Component() = default;
-    virtual void step(GameAPI& api, HybridPlant* owner) = 0;
-    int get_cost() const;
-    int get_cooldown() const;
-    int get_hp() const;
-};
-
-// 豌豆射手头: PeaHead(发射数量, 发射间隔tick)
-// cost = ceil(20000/间隔*数量), hp = 300
-class PeaHead : public Component {
-public:
-    PeaHead(int shot_number, int time_period);
-    void step(GameAPI& api, HybridPlant* owner) override;
-};
-
-// 向日葵头: SunHead(阳光数量, 产出间隔tick)
-// cost = ceil(50000/间隔*数量), hp = 300
-class SunHead : public Component {
-public:
-    SunHead(int amount, int time_period);
-    void step(GameAPI& api, HybridPlant* owner) override;
-};
-
-// 土豆地雷头: PotatoMineHead()
-// cost = 25, cooldown = 30000, hp = 300
-// 1500 tick后成熟, 接触僵尸爆炸
-class PotatoMineHead : public Component {
-public:
-    PotatoMineHead();
-    void step(GameAPI& api, HybridPlant* owner) override;
-};
-
-// 坚果头: WallNutHead()
-// cost = 50, cooldown = 30000, hp = 4000
-// 按血量比例切换受损动画
-class WallNutHead : public Component {
-public:
-    WallNutHead();
-    void step(GameAPI& api, HybridPlant* owner) override;
-};
-'''
-
-PLANT_TEMPLATE = '''\
-#include "../cpp_core/components.h"
-
-class MyHybridPlant : public HybridPlant {
-public:
-    MyHybridPlant(int r, int c) : HybridPlant(r, c) {
-        // 在这里添加组件:
-        // components.push_back(std::make_unique<PeaHead>(1, 200));
+    {class_name}(int r, int c) : HybridPlant(r, c) {{
+        // 在这里添加组件: 传入参数含义请参考 components.h 
+        components.push_back(std::make_unique<PeaHead>(1, 200));
         // components.push_back(std::make_unique<SunHead>(1, 1000));
         // components.push_back(std::make_unique<WallNutHead>());
         finalize();
-    }
-};
+    }}
+}};
 
-PVZ_REGISTER_HYBRID(MyHybridPlant, 200, "MyHybridPlant", "MyHybridPlant.png")
+// 填写规则: 派生类类名(可重复使用), ID(自定义植物的唯一标识 不可重复), 显示卡片名
+// 植物贴图文件名会自动生成为 custom_<ID>.png
+PVZ_REGISTER_HYBRID({class_name}, {plant_id}, "{class_name}")
 '''
-
-# PLACEHOLDER_CLASS
 
 
 class PlantEditorScene(QWidget):
     back_to_menu = pyqtSignal()
+    open_library = pyqtSignal()
 
-    def __init__(self, base_dir: Path, parent: QWidget | None = None) -> None:
+    def __init__(self, base_dir: Path, mode: str, record: PlantRecord | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.base_dir = base_dir
+        self.mode = mode if mode in MODE_LABELS else "A"
+        self.record = record
+        self.user_dir = self.base_dir / "user_plants"
+        self.user_dir.mkdir(exist_ok=True)
+        self.plant_source_path = record.plant_source_path if record else draft_plant_path(self.base_dir, self.mode)
+        self.components_source_path = record.components_source_path if record else draft_components_path(self.base_dir)
+        self.default_components_path = self.base_dir / "cpp_core" / "components.h"
         self.setFixedSize(960, 720)
         self._build_ui()
+        self._load_sources()
 
     def _build_ui(self) -> None:
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
 
         left_panel = QVBoxLayout()
-        back_btn = QPushButton("← 返回主菜单", self)
+        back_btn = QPushButton("← 返回", self)
         back_btn.setFixedHeight(30)
         back_btn.setStyleSheet("background: #333; color: white; border: none; padding: 5px 10px;")
-        back_btn.clicked.connect(lambda: self.back_to_menu.emit())
+        back_btn.clicked.connect(self._handle_back)
         left_panel.addWidget(back_btn)
+
+        mode_label = QLabel(MODE_LABELS[self.mode], self)
+        mode_label.setStyleSheet("color: white; font-size: 15px; font-weight: bold;")
+        left_panel.addWidget(mode_label)
 
         self.tabs = QTabWidget(self)
         self.tabs.setStyleSheet("""
@@ -125,15 +105,17 @@ class PlantEditorScene(QWidget):
         """)
 
         self.components_editor = QPlainTextEdit(self)
-        self.components_editor.setReadOnly(True)
-        self.components_editor.setPlainText(COMPONENTS_HEADER)
-        self._style_editor(self.components_editor, readonly=True)
+        components_readonly = self.mode == "A"
+        self.components_editor.setReadOnly(components_readonly)
+        self._style_editor(self.components_editor, readonly=components_readonly)
         CppHighlighter(self.components_editor.document())
 
         self.plant_editor = QPlainTextEdit(self)
-        self.plant_editor.setPlainText(PLANT_TEMPLATE)
         self._style_editor(self.plant_editor, readonly=False)
         CppHighlighter(self.plant_editor.document())
+        self.plant_editor.textChanged.connect(self._persist_plant_source)
+        if self.mode == "B":
+            self.components_editor.textChanged.connect(self._persist_components_source)
 
         self.tabs.addTab(self.components_editor, "components.h")
         self.tabs.addTab(self.plant_editor, "my_plant.cpp")
@@ -189,36 +171,100 @@ class PlantEditorScene(QWidget):
         )
         painter.drawImage(-250, 0, bg)
 
+    def _read_text(self, path: Path) -> str:
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+
+    def _handle_back(self) -> None:
+        if self.record is not None:
+            self.open_library.emit()
+        else:
+            self.back_to_menu.emit()
+
+    def _load_sources(self) -> None:
+        default_components = self._read_text(self.default_components_path)
+        if self.mode == "B":
+            components_source = self._read_text(self.components_source_path) or default_components
+            components_source = normalize_components_source(components_source)
+        else:
+            components_source = default_components
+        plant_source = self._read_text(self.plant_source_path) or default_plant_template(self.mode)
+        plant_source = normalize_plant_source(plant_source)
+
+        self.components_editor.blockSignals(True)
+        self.components_editor.setPlainText(components_source)
+        self.components_editor.blockSignals(False)
+
+        self.plant_editor.blockSignals(True)
+        self.plant_editor.setPlainText(plant_source)
+        self.plant_editor.blockSignals(False)
+
+        self._persist_plant_source()
+        if self.mode == "B":
+            self._persist_components_source()
+        registration = self._extract_registration(plant_source)
+        if registration:
+            _, plant_id, display_name = registration
+            image_name = plant_image_name(plant_id)
+            self._generate_preview(plant_source, display_name, image_name)
+        else:
+            self.preview_label.clear()
+
+    def _persist_plant_source(self) -> None:
+        self.plant_source_path.write_text(self.plant_editor.toPlainText(), encoding="utf-8")
+
+    def _persist_components_source(self) -> None:
+        if self.mode == "B":
+            self.components_source_path.write_text(self.components_editor.toPlainText(), encoding="utf-8")
+
     def compile_plant(self) -> None:
         self.status_output.clear()
         source = self.plant_editor.toPlainText()
+        self._persist_plant_source()
+        self._persist_components_source()
 
-        user_dir = self.base_dir / "user_plants"
-        user_dir.mkdir(exist_ok=True)
+        components = re.findall(r"make_unique<(\w+)>", source)
+        if not components:
+            self.status_output.setPlainText("编译失败: 植物至少需要一个组件，否则种下后会立即消失。")
+            return
+
         plugin_dir = self.base_dir / "plugins" / "plants"
         plugin_dir.mkdir(parents=True, exist_ok=True)
 
-        class_name = self._extract_class_name(source)
-        if not class_name:
-            self.status_output.setPlainText("错误: 未找到类名。请确保代码中有 'class XXX : public HybridPlant'")
+        registration = self._extract_registration(source)
+        if not registration:
+            self.status_output.setPlainText(
+                "错误: 未找到 PVZ_REGISTER_HYBRID(ClassName, PlantID, \"Name\")"
+            )
             return
+        _, plant_id, display_name = registration
+        image_name = plant_image_name(plant_id)
 
-        src_path = user_dir / f"{class_name}.cpp"
-        src_path.write_text(source, encoding="utf-8")
+        components_source = self.components_editor.toPlainText() if self.mode == "B" else None
+        try:
+            saved_record = create_or_update_record(
+                self.base_dir,
+                self.mode,
+                source,
+                components_source,
+                existing_key=self.record.key if self.record else None,
+            )
+        except ValueError as exc:
+            self.status_output.setPlainText(f"编译失败: {exc}")
+            return
 
         compiler = shutil.which("clang++") or shutil.which("g++") or shutil.which("c++")
         if not compiler:
             self.status_output.setPlainText("错误: 未找到 C++ 编译器。请安装 clang++ 或 g++。")
             return
 
-        suffix = ".dylib" if sys.platform == "darwin" else ".so"
-        out_path = plugin_dir / f"{class_name}{suffix}"
+        out_path = saved_record.plugin_path
 
         cmd = [
             compiler, "-std=c++17", "-shared", "-fPIC",
             "-I", str(self.base_dir / "cpp_api"),
             "-I", str(self.base_dir / "cpp_core"),
-            str(src_path),
+            "-I", str(saved_record.folder),
+            str(saved_record.plant_source_path),
             "-o", str(out_path),
         ]
 
@@ -227,18 +273,20 @@ class PlantEditorScene(QWidget):
             self.status_output.setPlainText(f"编译失败:\n{result.stderr}")
             return
 
+        self.record = saved_record
+        self.plant_source_path = saved_record.plant_source_path
+        self.components_source_path = saved_record.components_source_path if saved_record.components_source_path else self.components_source_path
+        cleanup_orphan_custom_assets(self.base_dir)
         self.status_output.setPlainText(f"编译成功! → {out_path.name}\n植物将在下次开始游戏时可用。")
-        self._generate_preview(source, class_name)
+        self._generate_preview(source, display_name, image_name)
 
-    def _extract_class_name(self, source: str) -> str | None:
-        import re
-        match = re.search(r"class\s+(\w+)\s*:\s*public\s+HybridPlant", source)
-        return match.group(1) if match else None
+    def _extract_registration(self, source: str) -> tuple[str, int, str] | None:
+        return parse_registration(source)
 
-    def _generate_preview(self, source: str, class_name: str) -> None:
-        import re
+    def _generate_preview(self, source: str, display_name: str, image_name: str) -> None:
         components = re.findall(r"make_unique<(\w+)>", source)
         if not components:
+            self.preview_label.clear()
             return
         pixmap = compose_plant_image(components, self.base_dir)
         if pixmap:
@@ -248,10 +296,16 @@ class PlantEditorScene(QWidget):
                 Qt.TransformationMode.SmoothTransformation,
             )
             self.preview_label.setPixmap(scaled)
-            save_path = self.base_dir / "plantimages" / f"{class_name}.png"
+            save_path = self.base_dir / "plantimages" / image_name
             pixmap.save(str(save_path))
-            card_path = self.base_dir / "res" / f"{class_name}.png"
+            card_path = self.base_dir / "res" / f"{display_name}.png"
             card_pixmap = pixmap.scaled(48, 68, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             card_pixmap.save(str(card_path))
+            missing = [name for name in components if not self._component_preview_exists(name)]
+            if missing:
+                self.status_output.setPlainText(
+                    "预览提示: 以下组件没有对应贴图，已在预览中跳过: " + ", ".join(missing)
+                )
 
-
+    def _component_preview_exists(self, component_name: str) -> bool:
+        return component_image_path(component_name, self.base_dir) is not None

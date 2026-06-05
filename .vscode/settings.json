@@ -3,5 +3,6 @@
     "QoderCN.methodQuickOperation": false,
     "QoderCN.cloudModelEnable": false,
     "python-envs.defaultEnvManager": "ms-python.python:conda",
-    "python-envs.defaultPackageManager": "ms-python.python:conda"
+    "python-envs.defaultPackageManager": "ms-python.python:conda",
+    "cmake.sourceDirectory": "/Users/yhangxiao/Library/Mobile Documents/com~apple~CloudDocs/大学/25-26春/04程序设计实习/PVZ_PlantEditMod/PlantsVSZombies_pyqt6/cpp_plants"
 }

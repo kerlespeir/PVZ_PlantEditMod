@@ -102,11 +102,14 @@ class CppPlantLoader:
         suffixes = {".dll"} if sys.platform == "win32" else {".dylib", ".so"}
         if not self.plugin_dir.exists():
             return self.plugins_by_id
+        self.plugins_by_id = {}
         for path in sorted(self.plugin_dir.iterdir()):
             if path.suffix not in suffixes:
                 continue
             plugin = self._load_plugin(path)
-            self.plugins_by_id[plugin.plant_id] = plugin
+            current = self.plugins_by_id.get(plugin.plant_id)
+            if current is None or path.stat().st_mtime >= current.path.stat().st_mtime:
+                self.plugins_by_id[plugin.plant_id] = plugin
         return self.plugins_by_id
 
     def _load_plugin(self, path: Path) -> PlantPlugin:

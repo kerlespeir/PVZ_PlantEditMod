@@ -25,7 +25,7 @@ private:
     int time_prd;
 public:
     PeaHead(int n, int prd)
-        : Component(static_cast<int>(std::ceil(20000.0 / prd * n)), 7500, 300),
+        : Component(static_cast<int>(std::ceil(200.0 / prd * n)), 7500, 300),
           shot_number(n), time_prd(prd) {}
 
     void step(GameAPI& api, HybridPlant* owner) override {
@@ -42,7 +42,7 @@ private:
     int time_prd;
 public:
     SunHead(int n, int prd)
-        : Component(static_cast<int>(std::ceil(50000.0 / prd * n)), 7500, 300),
+        : Component(static_cast<int>(std::ceil(500.0 / prd * n)), 7500, 300),
           amount(n), time_prd(prd) {}
 
     void step(GameAPI& api, HybridPlant* owner) override {

@@ -241,10 +241,14 @@ class GameScene(QWidget):
         if gif_name.startswith("PotatoMine"):
             label.resize(74, 53)
             label.move(px - 5, py + 10)
-        movie = QMovie(asset(self.base_dir, "plantimages", gif_name), parent=label)
-        label.setMovie(movie)
+        image_path = asset(self.base_dir, "plantimages", gif_name)
         label.setScaledContents(True)
-        movie.start()
+        if gif_name.lower().endswith(".gif"):
+            movie = QMovie(image_path, parent=label)
+            label.setMovie(movie)
+            movie.start()
+        else:
+            label.setPixmap(QPixmap(image_path))
         label.show()
         self.pic[self.clix][self.cliy] = label
 

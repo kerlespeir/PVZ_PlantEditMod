@@ -9,6 +9,8 @@ from PyQt6.QtWidgets import QLabel, QMainWindow, QStackedWidget
 from game_scene import GameScene
 from menu import MainMenu
 from plant_editor import PlantEditorScene
+from plant_library import PlantLibraryScene
+from custom_plant_store import cleanup_orphan_custom_assets, load_record
 from ui_helpers import ImageButton, ImageDialog, asset
 
 
@@ -16,6 +18,7 @@ class MainWindow(QMainWindow):
     def __init__(self, base_dir: Path) -> None:
         super().__init__()
         self.base_dir = base_dir
+        cleanup_orphan_custom_assets(base_dir)
         self.setWindowIcon(QIcon(asset(base_dir, "res", "pvz.ico")))
         self.setWindowTitle("Plants vs.Zombies")
         self.setFixedSize(960, 720)
@@ -26,11 +29,14 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.menu)
         self.game: GameScene | None = None
         self.editor: PlantEditorScene | None = None
+        self.library: PlantLibraryScene | None = None
         self._connect_menu()
 
     def _connect_menu(self) -> None:
         self.menu.play.connect(self.start_game)
-        self.menu.editor_clicked.connect(self.open_editor)
+        self.menu.editor_a_clicked.connect(lambda: self.open_editor("A"))
+        self.menu.editor_b_clicked.connect(lambda: self.open_editor("B"))
+        self.menu.library_clicked.connect(self.open_library)
         self.menu.ready_for_quit.connect(self.show_quit)
         self.menu.help_clicked.connect(self.show_help)
         self.menu.option_clicked.connect(lambda: self.show_simple_dialog("Options.png", "yesButton.png", 540))
@@ -39,11 +45,13 @@ class MainWindow(QMainWindow):
     def center_widget(self, widget) -> None:
         widget.move((self.width() - widget.width()) // 2, (self.height() - widget.height()) // 2)
 
-    def open_editor(self) -> None:
-        self.editor = PlantEditorScene(self.base_dir)
+    def open_editor(self, mode: str, record_key: str | None = None) -> None:
+        record = load_record(self.base_dir, record_key) if record_key else None
+        self.editor = PlantEditorScene(self.base_dir, mode=mode, record=record)
         self.stack.addWidget(self.editor)
         self.stack.setCurrentWidget(self.editor)
         self.editor.back_to_menu.connect(self.close_editor)
+        self.editor.open_library.connect(self.return_to_library)
 
     def close_editor(self) -> None:
         if self.editor is not None:
@@ -51,6 +59,38 @@ class MainWindow(QMainWindow):
             self.stack.removeWidget(self.editor)
             self.editor.deleteLater()
             self.editor = None
+
+    def open_library(self) -> None:
+        if self.library is None:
+            self.library = PlantLibraryScene(self.base_dir)
+            self.stack.addWidget(self.library)
+            self.library.back_to_menu.connect(self.close_library)
+            self.library.edit_plant.connect(self.open_library_record)
+        self.library.refresh()
+        self.stack.setCurrentWidget(self.library)
+
+    def close_library(self) -> None:
+        if self.library is not None:
+            self.stack.setCurrentWidget(self.menu)
+
+    def open_library_record(self, record_key: str) -> None:
+        record = load_record(self.base_dir, record_key)
+        if not record:
+            if self.library is not None:
+                self.library.refresh()
+            return
+        if self.editor is not None:
+            self.stack.removeWidget(self.editor)
+            self.editor.deleteLater()
+            self.editor = None
+        self.open_editor(record.mode, record_key=record.key)
+
+    def return_to_library(self) -> None:
+        if self.editor is not None:
+            self.stack.removeWidget(self.editor)
+            self.editor.deleteLater()
+            self.editor = None
+        self.open_library()
 
     def show_quit(self) -> None:
         dialog = ImageDialog(asset(self.base_dir, "res", "QuitWindow.png"), self)
