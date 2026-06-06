@@ -58,6 +58,7 @@ public:
 class PotatoMineHead : public Component {
 private:
     bool mature = false;
+    static const int ARMED_BONUS = 50000;  // 成熟后附加的"无敌"血量，叠加而非覆盖其他组件 HP
 public:
     PotatoMineHead() : Component(25, 30000, 300) {}
 
@@ -65,7 +66,7 @@ public:
         if (!owner) return;
         if (!mature && owner->timer >= 1500) {
             mature = true;
-            owner->hp = 50000;
+            owner->hp += ARMED_BONUS;  // 保留 WallNutHead 等其他组件累计的 HP
             api.set_hp(owner->row, owner->col, owner->hp);
             api.change_animation(owner->row, owner->col, "PotatoMine.gif");
         }
@@ -85,9 +86,10 @@ public:
 
     void step(GameAPI& api, HybridPlant* owner) override {
         if (!owner || owner->hp <= 0) return;
-        int max_hp = get_hp();
+        // 阈值基于植物总 HP(max_hp)，而非组件自身的 4000，杂交植物才会在正确血量切换外观
+        int max_hp = owner->max_hp > 0 ? owner->max_hp : get_hp();
         int threshold_low = max_hp / 3;
-        int threshold_mid = max_hp * 2 / 3;     //数值是component的hp，但比较的是owner的hp
+        int threshold_mid = max_hp * 2 / 3;
         if (owner->hp < threshold_low && state != 3) {
             state = 3;
             api.change_animation(owner->row, owner->col, "WallNut2.gif");
@@ -117,6 +119,7 @@ inline void HybridPlant::finalize() {
         total_hp += comp->get_hp();
     }
     hp = total_hp;
+    max_hp = total_hp;
 }
 
 inline int HybridPlant::total_cost() const {
@@ -138,6 +141,7 @@ inline int HybridPlant::total_cooldown() const {
 inline void HybridPlant::Update(GameAPI& api) {
     timer++;
     for (auto& comp : components) {
+        if (hp <= 0) break;  // 植物已死亡(如已爆炸)，本 tick 不再执行后续组件
         comp->step(api, this);
     }
 }

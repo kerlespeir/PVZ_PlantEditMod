@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QImage, QPainter, QPixmap
+from PyQt6.QtGui import QIcon, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -14,17 +16,27 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from custom_plant_store import cleanup_orphan_custom_assets, delete_record, load_record, load_records
+from custom_plant_store import (
+    BUILTIN_HYBRID_IDS,
+    cleanup_orphan_custom_assets,
+    delete_record,
+    load_record,
+    load_records,
+    load_selected_plants,
+    plant_image_name,
+    save_selected_plants,
+)
 from ui_helpers import asset
 
 
-class ClickableLabel(QLabel):
-    clicked = pyqtSignal()
-
-    def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit()
-        super().mousePressEvent(event)
+class _HybridEntry:
+    """杂交植物虚拟条目 — 可勾选，不可编辑/删除"""
+    def __init__(self, plant_id: int):
+        self.plant_id = plant_id
+        self.key = f"__hybrid_{plant_id}"
+        self.mode = "H"  # Hybrid
+        self.display_name = f"杂交植物 #{plant_id}"
+        self.image_name = plant_image_name(plant_id)
 
 
 class PlantLibraryScene(QWidget):
@@ -38,6 +50,7 @@ class PlantLibraryScene(QWidget):
         self.page = 0
         self.page_size = 8
         self.records = []
+        self.selected_ids: set[int] = set()
         self._build_ui()
         self.refresh()
 
@@ -101,6 +114,26 @@ class PlantLibraryScene(QWidget):
     def refresh(self) -> None:
         cleanup_orphan_custom_assets(self.base_dir)
         self.records = load_records(self.base_dir)
+
+        # 杂交植物（仅当 .dylib 存在时才显示）
+        from plants.cpp_bridge import CppPlantLoader
+        loader = CppPlantLoader(self.base_dir / "plugins" / "plants")
+        existing_plugins = loader.load_all()
+        for hid in sorted(BUILTIN_HYBRID_IDS):
+            if hid in existing_plugins and hid not in {r.plant_id for r in self.records}:
+                self.records.append(_HybridEntry(hid))
+
+        self.records.sort(key=lambda r: (r.plant_id, getattr(r, 'display_name', '')))
+
+        loaded = load_selected_plants(self.base_dir)
+        if loaded is None:
+            # 首次加载时，所有植物默认选中并保存
+            self.selected_ids = {r.plant_id for r in self.records if isinstance(r, _HybridEntry) or r.plant_id not in BUILTIN_HYBRID_IDS}
+            # 上面那行太复杂，简化：所有非内置植物ID都加入
+            self.selected_ids = {r.plant_id for r in self.records if r.plant_id not in (1, 2, 3, 4, 5)}
+            save_selected_plants(self.base_dir, self.selected_ids)
+        else:
+            self.selected_ids = loaded
         max_page = max(0, (len(self.records) - 1) // self.page_size)
         self.page = min(self.page, max_page)
         self._render_page()
@@ -141,34 +174,62 @@ class PlantLibraryScene(QWidget):
     def _build_card(self, record) -> QWidget:
         card = QWidget(self)
         card.setStyleSheet("background: rgba(20,20,20,0.6); border: 1px solid #666;")
-        card.setFixedSize(205, 250)
+        card.setFixedSize(205, 275)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setSpacing(6)
 
-        thumb = ClickableLabel(card)
-        thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        thumb.setFixedSize(180, 150)
-        thumb.setStyleSheet("background: rgba(0,0,0,0.25); border: 1px solid #555;")
+        is_hybrid = isinstance(record, _HybridEntry)
+
+        # 缩略图按钮：点击弹出操作菜单
         image_path = self.base_dir / "plantimages" / record.image_name
         pix = QPixmap(str(image_path))
+        thumb = QPushButton(card)
+        thumb.setFixedSize(180, 150)
+        thumb.setCursor(Qt.CursorShape.PointingHandCursor)
+        thumb.setStyleSheet(
+            "QPushButton { background: rgba(0,0,0,0.25); border: 1px solid #555; }"
+            "QPushButton:hover { border: 1px solid #aaa; background: rgba(40,40,40,0.5); }"
+        )
         if not pix.isNull():
-            thumb.setPixmap(pix.scaled(170, 140, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            scaled = pix.scaled(170, 140, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            thumb.setIcon(QIcon(scaled))
+            thumb.setIconSize(scaled.size())
         else:
             thumb.setText("无贴图")
-            thumb.setStyleSheet("background: rgba(0,0,0,0.25); border: 1px solid #555; color: white;")
-        thumb.clicked.connect(lambda record_key=record.key: self._show_actions(record_key))
+        if is_hybrid:
+            thumb.clicked.connect(partial(self._show_hybrid_actions, record.plant_id, record.display_name))
+        else:
+            thumb.clicked.connect(partial(self._show_record_actions, record.key))
         layout.addWidget(thumb, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        info = QLabel(f'mode {record.mode}\n{record.display_name}\nID="{record.plant_id}"', card)
-        info.setStyleSheet("color: white; font-size: 13px;")
+        mode_text = "hybrid" if is_hybrid else f"mode {record.mode}"
+        info = QLabel(f'{mode_text}\n{record.display_name}\nID="{record.plant_id}"', card)
+        info.setStyleSheet("color: white; font-size: 12px;")
         info.setAlignment(Qt.AlignmentFlag.AlignCenter)
         info.setWordWrap(True)
         layout.addWidget(info)
+
+        # 勾选框
+        cb = QCheckBox("启用", card)
+        cb.setChecked(record.plant_id in self.selected_ids)
+        cb.setStyleSheet("color: #ccc; font-size: 12px;")
+        cb.stateChanged.connect(partial(self._toggle_selection, record.plant_id))
+        layout.addWidget(cb, alignment=Qt.AlignmentFlag.AlignCenter)
         layout.addStretch()
         return card
 
-    def _show_actions(self, record_key: str) -> None:
+    def _show_hybrid_actions(self, plant_id: int, display_name: str) -> None:
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle(f"{display_name} (杂交植物)")
+        dialog.setText("预编译杂交植物，不可编辑。")
+        delete_btn = dialog.addButton("删除", QMessageBox.ButtonRole.DestructiveRole)
+        dialog.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        dialog.exec()
+        if dialog.clickedButton() == delete_btn:
+            self._delete_hybrid(plant_id, display_name)
+
+    def _show_record_actions(self, record_key: str) -> None:
         record = load_record(self.base_dir, record_key)
         if not record:
             self.refresh()
@@ -176,16 +237,45 @@ class PlantLibraryScene(QWidget):
         dialog = QMessageBox(self)
         dialog.setWindowTitle(record.display_name)
         dialog.setText("请选择操作")
-        delete_button = dialog.addButton("删除植物", QMessageBox.ButtonRole.DestructiveRole)
-        edit_button = dialog.addButton("重新编辑", QMessageBox.ButtonRole.AcceptRole)
+        del_btn = dialog.addButton("删除植物", QMessageBox.ButtonRole.DestructiveRole)
+        edit_btn = dialog.addButton("重新编辑", QMessageBox.ButtonRole.AcceptRole)
         dialog.addButton("取消", QMessageBox.ButtonRole.RejectRole)
         dialog.exec()
-
         clicked = dialog.clickedButton()
-        if clicked == edit_button:
+        if clicked == edit_btn:
             self.edit_plant.emit(record.key)
-        elif clicked == delete_button:
+        elif clicked == del_btn:
             self._confirm_delete(record.key, record.display_name)
+
+    def _delete_hybrid(self, plant_id: int, display_name: str) -> None:
+        """删除预编译杂交植物"""
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("确定删除吗？")
+        dialog.setText(f"确定删除杂交植物 {display_name} (ID {plant_id}) 吗？\n这将移除其插件文件和贴图。")
+        confirm = dialog.addButton("确定", QMessageBox.ButtonRole.AcceptRole)
+        dialog.addButton("再想想", QMessageBox.ButtonRole.RejectRole)
+        dialog.exec()
+        if dialog.clickedButton() != confirm:
+            return
+
+        # 通过 CppPlantLoader 找到对应插件文件
+        from plants.cpp_bridge import CppPlantLoader
+        loader = CppPlantLoader(self.base_dir / "plugins" / "plants")
+        plugins = loader.load_all()
+        plugin = plugins.get(plant_id)
+        if plugin and plugin.path.exists():
+            plugin.path.unlink()
+
+        # 删除贴图
+        (self.base_dir / "plantimages" / f"custom_{plant_id}.png").unlink(missing_ok=True)
+        (self.base_dir / "res" / f"custom_{plant_id}_card.png").unlink(missing_ok=True)
+
+        # 从杂交植物白名单和选中列表中移除
+        BUILTIN_HYBRID_IDS.discard(plant_id)
+        self.selected_ids.discard(plant_id)
+        save_selected_plants(self.base_dir, self.selected_ids)
+
+        self.refresh()
 
     def _confirm_delete(self, record_key: str, display_name: str) -> None:
         dialog = QMessageBox(self)
@@ -196,7 +286,15 @@ class PlantLibraryScene(QWidget):
         dialog.exec()
         if dialog.clickedButton() == confirm:
             delete_record(self.base_dir, record_key)
+            self.selected_ids = load_selected_plants(self.base_dir) or set()
             self.refresh()
+
+    def _toggle_selection(self, plant_id: int, state: int) -> None:
+        if state == Qt.CheckState.Checked.value:
+            self.selected_ids.add(plant_id)
+        else:
+            self.selected_ids.discard(plant_id)
+        save_selected_plants(self.base_dir, self.selected_ids)
 
     def prev_page(self) -> None:
         if self.page > 0:

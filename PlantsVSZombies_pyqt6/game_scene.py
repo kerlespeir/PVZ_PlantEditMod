@@ -11,6 +11,7 @@ from sun import MySun
 from ui_helpers import ImageButton, ImageDialog, asset
 from zombies import Zombie, make_zombie
 from plants.cpp_bridge import CppPlantLoader, GameAPIAdapter, PlantInstance
+from custom_plant_store import BUILTIN_PLANT_IDS, card_image_name, load_selected_plants
 
 
 class GameScene(QWidget):
@@ -49,7 +50,16 @@ class GameScene(QWidget):
         self.plant_loader = CppPlantLoader(self.base_dir / "plugins" / "plants")
         self.plant_plugins = self.plant_loader.load_all()
         self.api_adapter = GameAPIAdapter(self)
-        self.seed_plant_ids: list[int] = sorted(self.plant_plugins.keys())
+        # 内置植物总是出现；其余植物仅在图鉴中勾选的才出现
+        selected = load_selected_plants(self.base_dir)
+        if selected is None:
+            # 首次运行 → 全部显示
+            self.seed_plant_ids = sorted(self.plant_plugins.keys())
+        else:
+            self.seed_plant_ids = sorted(
+                pid for pid in self.plant_plugins
+                if pid in BUILTIN_PLANT_IDS or pid in selected
+            )
 
         self._build_hud()
         self.monitor_timer = self._timer(10, self.game_tick)
@@ -86,12 +96,11 @@ class GameScene(QWidget):
             plugin = self.plant_plugins[plant_id]
             sun_cost = plugin.sun_cost
             cooldown = plugin.cooldown_ms
-            plant_name = plugin.name
             seed = Seed(
                 self.base_dir,
                 cooldown,
                 sun_cost,
-                asset(self.base_dir, "res", f"{plant_name}.png"),
+                self._card_image_path(plant_id, plugin.name),
                 bank,
             )
             seed.checksun(self.sun_num)
@@ -108,10 +117,35 @@ class GameScene(QWidget):
         self.shovel.clicked.connect(self.select_shovel)
         self.shovel.show()
 
+        if not self.seed_plant_ids:
+            hint = QLabel(
+                "尚无可用植物。请先运行 build_cpp_plants.py 编译内置植物，\n或在植物编辑器中创建并编译自定义植物。",
+                self,
+            )
+            hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            hint.setStyleSheet(
+                "color: white; font-size: 15px; font-weight: bold;"
+                "background: rgba(0,0,0,0.55); padding: 12px; border-radius: 6px;"
+            )
+            hint.adjustSize()
+            hint.move((self.width() - hint.width()) // 2, 150)
+            hint.show()
+
         menu = ImageButton(self.base_dir, asset(self.base_dir, "res", "MenuButton.png"), parent=self)
         menu.move(self.width() - menu.width(), 0)
         menu.clicked.connect(lambda checked=False: self.menu_clicked.emit())
         menu.show()
+
+    def _card_image_path(self, plant_id: int, plant_name: str) -> str:
+        # 内置植物使用 res/<Name>.png；自定义植物使用命名空间隔离的 res/custom_<ID>_card.png
+        if plant_id in BUILTIN_PLANT_IDS:
+            return asset(self.base_dir, "res", f"{plant_name}.png")
+        custom_card = self.base_dir / "res" / card_image_name(plant_id)
+        if custom_card.exists():
+            return str(custom_card)
+        # 兜底: 回退到旧的 display_name 卡片(若存在)，否则用内置占位图
+        legacy = self.base_dir / "res" / f"{plant_name}.png"
+        return str(legacy)
 
     def start_game(self) -> None:
         ready = QLabel(self)
@@ -289,16 +323,20 @@ class GameScene(QWidget):
         pea.move(xx + 40, yy + 2)
         pea.setPixmap(QPixmap(asset(self.base_dir, "plantimages", "PeaSnow.png" if snow else "Pea.png")))
         pea.show()
-        timer = self._timer(33, lambda: None)
-        timer.timeout.disconnect()
+        timer = QTimer(self)
+        self._timers.append(timer)
 
         def step() -> None:
             pea.move(pea.x() + 10, pea.y())
             if pea.x() > 1000 or self.hit(pea.x(), cy):
                 timer.stop()
+                if timer in self._timers:
+                    self._timers.remove(timer)
+                timer.deleteLater()
                 pea.deleteLater()
 
         timer.timeout.connect(step)
+        timer.start(33)
 
     def game_tick(self) -> None:
         if self._game_over:
@@ -383,14 +421,14 @@ class GameScene(QWidget):
         return self.valid_cell(row, col) and self.map[col][row] == 0
 
     def api_shoot_pea(self, row: int, col: int, number: int, snow: bool = False) -> None:
-        if not self.valid_cell(row, col):
+        if not self.valid_cell(row, col) or self.map[col][row] == 0:
             return
         x, y = self.cell_x(col), self.cell_y(row)
         for idx in range(max(0, number)):
             QTimer.singleShot(300 * idx, lambda x=x, y=y, row=row, snow=snow: self.launch_pea(x, y, row, snow))
 
     def api_raise_sun(self, row: int, col: int) -> None:
-        if self.valid_cell(row, col):
+        if self.valid_cell(row, col) and self.map[col][row] != 0:
             self.create_sun(self.cell_x(col), self.cell_y(row))
 
     def api_change_animation(self, row: int, col: int, animation_name: str) -> None:
@@ -474,7 +512,13 @@ class GameScene(QWidget):
         for zombie in list(self.zombies):
             if zombie.hp <= 0:
                 zombie.die()
-                if zombie.movie and zombie.movie.frameCount() == zombie.movie.currentFrameNumber() + 1:
+                zombie.die_ticks += 1
+                # 失败保护: 死亡动画播完即移除；若帧检查永不命中, 满 300 tick(~3s) 也强制移除
+                frame_done = bool(
+                    zombie.movie and zombie.movie.frameCount()
+                    and zombie.movie.frameCount() == zombie.movie.currentFrameNumber() + 1
+                )
+                if frame_done or zombie.die_ticks >= 300:
                     self.zombies.remove(zombie)
                     zombie.deleteLater()
                 continue
@@ -487,16 +531,19 @@ class GameScene(QWidget):
             if zombie.x() <= -100:
                 self.zwin()
                 return
+        # 所有僵尸已清空且僵尸序列结束 → 立即判定胜利, 不必等下一次 create_zombie_tick
+        if self.zcnt >= 50 and len(self.zombies) == 0:
+            self.pwin()
 
     def hit(self, x: int, y: int) -> bool:
         for zombie in self.zombies:
-            if self.raw_h[y - 1] == zombie.y() and abs(x - (zombie.x() + 100)) <= 15:
+            if zombie.hp > 0 and self.raw_h[y - 1] == zombie.y() and abs(x - (zombie.x() + 100)) <= 15:
                 zombie.get_hurt(40)
                 return True
         return False
 
     def pea_detect(self, x: int, y: int) -> bool:
-        return any(self.raw_h[y - 1] == zombie.y() and zombie.x() + 100 > x for zombie in self.zombies)
+        return any(zombie.hp > 0 and self.raw_h[y - 1] == zombie.y() and zombie.x() + 100 > x for zombie in self.zombies)
 
     def pwin(self) -> None:
         if self._game_over:

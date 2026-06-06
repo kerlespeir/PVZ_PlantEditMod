@@ -57,6 +57,9 @@ class Seed(QPushButton):
         self.mask1.setVisible(sun_num < self.sun)
 
     def cdstart(self) -> None:
+        # 停止之前的动画和定时器，避免重复触发导致 animation 冲突
+        if hasattr(self, '_anime') and self._anime is not None:
+            self._anime.stop()
         self.mask1.show()
         self.in_cd = True
         self.mask2.move(0, 0)
@@ -71,6 +74,9 @@ class Seed(QPushButton):
 
     def _finish_cd(self) -> None:
         self.in_cd = False
+        if hasattr(self, '_anime') and self._anime is not None:
+            self._anime.stop()
+            self._anime = None
         self.check.emit()
 
     def mousePressEvent(self, event) -> None:

@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/../plugins/plants)
 
 include_directories(${CMAKE_CURRENT_LIST_DIR}/../cpp_api)
+include_directories(${CMAKE_CURRENT_LIST_DIR}/../cpp_core)
 
 set(PVZ_PLANTS
     SunFlower
@@ -14,6 +15,10 @@ set(PVZ_PLANTS
     PotatoMine
     Repeater
     DoubleSunShooter
+    PeaNut
+    SunNut
+    MinePea
+    SunFortress
 )
 
 foreach(plant ${PVZ_PLANTS})

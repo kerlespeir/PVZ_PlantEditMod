@@ -35,17 +35,32 @@ class MainMenu(QWidget):
         newgame.move(515, 125)
         newgame.clicked.connect(lambda checked=False: self.play.emit())
 
-        survival = ImageButton(self.base_dir, asset(self.base_dir, "res", "SelectorScreen_Survival_button.png"), parent=self)
-        survival.move(515, 240)
-        survival.clicked.connect(lambda checked=False: self.editor_a_clicked.emit())
+        editor_a = ImageButton(
+            self.base_dir,
+            asset(self.base_dir, "res", "cut_buttons", "row0_normal.png"),
+            asset(self.base_dir, "res", "cut_buttons", "row0_highlight.png"),
+            self,
+        )
+        editor_a.move(515, 240)
+        editor_a.clicked.connect(lambda checked=False: self.editor_a_clicked.emit())
 
-        challenge = ImageButton(self.base_dir, asset(self.base_dir, "res", "SelectorScreen_Challenges_button.png"), parent=self)
-        challenge.move(520, 334)
-        challenge.clicked.connect(lambda checked=False: self.editor_b_clicked.emit())
+        editor_b = ImageButton(
+            self.base_dir,
+            asset(self.base_dir, "res", "cut_buttons", "row1_normal.png"),
+            asset(self.base_dir, "res", "cut_buttons", "row1_highlight.png"),
+            self,
+        )
+        editor_b.move(520, 334)
+        editor_b.clicked.connect(lambda checked=False: self.editor_b_clicked.emit())
 
-        vase = ImageButton(self.base_dir, asset(self.base_dir, "res", "SelectorScreen_Vasebreaker_button.png"), parent=self)
-        vase.move(520, 410)
-        vase.clicked.connect(lambda checked=False: self.library_clicked.emit())
+        library_btn = ImageButton(
+            self.base_dir,
+            asset(self.base_dir, "res", "cut_buttons", "row2_normal.png"),
+            asset(self.base_dir, "res", "cut_buttons", "row2_highlight.png"),
+            self,
+        )
+        library_btn.move(520, 410)
+        library_btn.clicked.connect(lambda checked=False: self.library_clicked.emit())
 
         help_btn = ImageButton(
             self.base_dir,

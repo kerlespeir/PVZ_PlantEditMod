@@ -10,6 +10,7 @@ class Component;
 class HybridPlant : public Plant {
 public:
     int timer = 0;
+    int max_hp = 0;  // finalize() 时记录的初始总 HP，供组件做相对阈值判断
     std::vector<std::unique_ptr<Component>> components;
 
     HybridPlant(int r, int c) : Plant(r, c, 0) {}

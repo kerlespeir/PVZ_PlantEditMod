@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont, QImage, QPainter, QPixmap
+from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 from syntax_highlighter import CppHighlighter
 from image_composer import component_image_path, compose_plant_image
 from custom_plant_store import (
+    card_image_name,
     cleanup_orphan_custom_assets,
     create_or_update_record,
     draft_components_path,
@@ -203,9 +204,9 @@ class PlantEditorScene(QWidget):
             self._persist_components_source()
         registration = self._extract_registration(plant_source)
         if registration:
-            _, plant_id, display_name = registration
+            _, plant_id, _ = registration
             image_name = plant_image_name(plant_id)
-            self._generate_preview(plant_source, display_name, image_name)
+            self._generate_preview(plant_source, card_image_name(plant_id), image_name)
         else:
             self.preview_label.clear()
 
@@ -236,7 +237,7 @@ class PlantEditorScene(QWidget):
                 "错误: 未找到 PVZ_REGISTER_HYBRID(ClassName, PlantID, \"Name\")"
             )
             return
-        _, plant_id, display_name = registration
+        _, plant_id, _ = registration
         image_name = plant_image_name(plant_id)
 
         components_source = self.components_editor.toPlainText() if self.mode == "B" else None
@@ -278,34 +279,58 @@ class PlantEditorScene(QWidget):
         self.components_source_path = saved_record.components_source_path if saved_record.components_source_path else self.components_source_path
         cleanup_orphan_custom_assets(self.base_dir)
         self.status_output.setPlainText(f"编译成功! → {out_path.name}\n植物将在下次开始游戏时可用。")
-        self._generate_preview(source, display_name, image_name)
+        self._generate_preview(source, saved_record.card_name, image_name)
 
     def _extract_registration(self, source: str) -> tuple[str, int, str] | None:
         return parse_registration(source)
 
-    def _generate_preview(self, source: str, display_name: str, image_name: str) -> None:
+    def _generate_preview(self, source: str, card_name: str, image_name: str) -> None:
         components = re.findall(r"make_unique<(\w+)>", source)
         if not components:
             self.preview_label.clear()
             return
         pixmap = compose_plant_image(components, self.base_dir)
-        if pixmap:
-            scaled = pixmap.scaled(
-                180, 180,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
+        if pixmap is None:
+            # 合成失败(缺底图或组件贴图)。落地一张占位图，避免植物种下后不可见、卡片空白。
+            pixmap = self._placeholder_pixmap(components)
+            self._append_status(
+                "警告: 贴图合成失败，已使用占位图。植物可正常游玩，但外观为占位方块。\n"
+                "请检查 components_images/ 下是否缺少底图或组件贴图。"
             )
-            self.preview_label.setPixmap(scaled)
-            save_path = self.base_dir / "plantimages" / image_name
-            pixmap.save(str(save_path))
-            card_path = self.base_dir / "res" / f"{display_name}.png"
-            card_pixmap = pixmap.scaled(48, 68, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            card_pixmap.save(str(card_path))
-            missing = [name for name in components if not self._component_preview_exists(name)]
-            if missing:
-                self.status_output.setPlainText(
-                    "预览提示: 以下组件没有对应贴图，已在预览中跳过: " + ", ".join(missing)
-                )
+        scaled = pixmap.scaled(
+            180, 180,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.preview_label.setPixmap(scaled)
+        save_path = self.base_dir / "plantimages" / image_name
+        pixmap.save(str(save_path))
+        card_path = self.base_dir / "res" / card_name
+        card_pixmap = pixmap.scaled(48, 68, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        card_pixmap.save(str(card_path))
+        missing = [name for name in components if not self._component_preview_exists(name)]
+        if missing:
+            self._append_status(
+                "预览提示: 以下组件没有对应贴图，已在预览中跳过: " + ", ".join(missing)
+            )
+
+    def _append_status(self, message: str) -> None:
+        current = self.status_output.toPlainText()
+        self.status_output.setPlainText(f"{current}\n{message}" if current else message)
+
+    def _placeholder_pixmap(self, components: list[str]) -> QPixmap:
+        pixmap = QPixmap(100, 140)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.fillRect(10, 30, 80, 100, QColor(80, 160, 90))
+        painter.setPen(QColor(255, 255, 255))
+        font = QFont()
+        font.setPointSize(9)
+        painter.setFont(font)
+        label = "+".join(c.replace("Head", "") for c in components[:2]) or "Plant"
+        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, label)
+        painter.end()
+        return pixmap
 
     def _component_preview_exists(self, component_name: str) -> bool:
         return component_image_path(component_name, self.base_dir) is not None

@@ -21,7 +21,34 @@ BUILTIN_PLUGIN_NAMES = {
     "SunFlower.so",
     "WallNut.dylib",
     "WallNut.so",
+    # 预编译杂交植物（无 PlantRecord，不可被清理）
+    "PeaNut.dylib",
+    "PeaNut.so",
+    "SunNut.dylib",
+    "SunNut.so",
+    "MinePea.dylib",
+    "MinePea.so",
+    "SunFortress.dylib",
+    "SunFortress.so",
 }
+
+
+# 内置植物的显示名 / ID / 卡片文件名。自定义植物不得与之冲突，清理逻辑也永不删除这些卡片。
+BUILTIN_PLANT_NAMES = {
+    "SunFlower",
+    "Peashooter",
+    "WallNut",
+    "PotatoMine",
+    "Repeater",
+    "DoubleSunShooter",
+}
+
+BUILTIN_PLANT_IDS = {1, 2, 3, 4, 5}
+
+# 预编译杂交植物 ID（无 PlantRecord，需要在图鉴中显示为可勾选条目）
+BUILTIN_HYBRID_IDS = {100, 201, 202, 203, 205}
+
+BUILTIN_CARD_NAMES = {f"{name}.png" for name in BUILTIN_PLANT_NAMES}
 
 
 REGISTRATION_RE = re.compile(
@@ -36,6 +63,7 @@ class PlantRecord:
     plant_id: int
     display_name: str
     image_name: str
+    card_name: str
     class_name: str
     folder: Path
     plant_source_path: Path
@@ -74,6 +102,11 @@ def draft_components_path(base_dir: Path) -> Path:
 
 def plant_image_name(plant_id: int) -> str:
     return f"custom_{plant_id}.png"
+
+
+def card_image_name(plant_id: int) -> str:
+    # 卡片图使用独立命名空间，避免覆盖内置 res/<Name>.png
+    return f"custom_{plant_id}_card.png"
 
 
 def parse_registration(source: str) -> tuple[str, int, str] | None:
@@ -123,6 +156,7 @@ def load_record(base_dir: Path, key: str) -> PlantRecord | None:
         plant_id=int(data["plant_id"]),
         display_name=data["display_name"],
         image_name=plant_image_name(int(data["plant_id"])),
+        card_name=card_image_name(int(data["plant_id"])),
         class_name=data["class_name"],
         folder=folder,
         plant_source_path=folder / "plant.cpp",
@@ -161,6 +195,10 @@ def create_or_update_record(
         raise ValueError("未找到 PVZ_REGISTER_HYBRID 宏")
 
     class_name, plant_id, display_name = registration
+    if plant_id in BUILTIN_PLANT_IDS:
+        raise ValueError(f"植物 ID {plant_id} 是内置植物保留 ID，请改用其他 ID")
+    if display_name in BUILTIN_PLANT_NAMES:
+        raise ValueError(f'显示名 "{display_name}" 与内置植物重名，请改用其他名称')
     duplicate = plant_id_in_use(base_dir, plant_id, except_key=existing_key)
     if duplicate:
         raise ValueError(f"植物 ID {plant_id} 已被 {duplicate.display_name} 占用")
@@ -186,6 +224,7 @@ def create_or_update_record(
         "plant_id": plant_id,
         "display_name": display_name,
         "image_name": plant_image_name(plant_id),
+        "card_name": card_image_name(plant_id),
         "class_name": class_name,
         "plugin_filename": plugin_filename,
     }
@@ -197,6 +236,7 @@ def create_or_update_record(
         plant_id=plant_id,
         display_name=display_name,
         image_name=plant_image_name(plant_id),
+        card_name=card_image_name(plant_id),
         class_name=class_name,
         folder=folder,
         plant_source_path=plant_source_path,
@@ -211,18 +251,52 @@ def delete_record(base_dir: Path, key: str) -> None:
         return
     if record.plugin_path.exists():
         record.plugin_path.unlink(missing_ok=True)
-    card_path = base_dir / "res" / f"{record.display_name}.png"
+    card_path = base_dir / "res" / record.card_name
     plant_image_path = base_dir / "plantimages" / record.image_name
-    card_path.unlink(missing_ok=True)
+    # 仅删除命名空间隔离的自定义卡片，绝不删除内置卡片
+    if card_path.name not in BUILTIN_CARD_NAMES:
+        card_path.unlink(missing_ok=True)
     plant_image_path.unlink(missing_ok=True)
     rmtree(record.folder, ignore_errors=True)
+
+
+# ── 植物选中状态持久化 ──────────────────────────────────────────────
+
+SELECTED_FILE_NAME = "selected_plants.json"
+
+
+def _selected_path(base_dir: Path) -> Path:
+    return base_dir / "user_plants" / SELECTED_FILE_NAME
+
+
+def load_selected_plants(base_dir: Path) -> set[int] | None:
+    """返回用户勾选的植物 ID 集合。文件不存在时返回 None（视作全部选中）。"""
+    path = _selected_path(base_dir)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {int(x) for x in data if isinstance(x, (int, float))}
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def save_selected_plants(base_dir: Path, selected: set[int]) -> None:
+    path = _selected_path(base_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(sorted(selected), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def cleanup_orphan_custom_assets(base_dir: Path) -> None:
     valid_records = load_records(base_dir)
     valid_plugin_names = {record.plugin_path.name for record in valid_records}
-    valid_card_names = {f"{record.display_name}.png" for record in valid_records}
+    valid_card_names = {record.card_name for record in valid_records}
     valid_plant_image_names = {record.image_name for record in valid_records}
+
+    # 预编译杂交植物（无 PlantRecord）的贴图也受保护
+    for hid in BUILTIN_HYBRID_IDS:
+        valid_card_names.add(f"custom_{hid}_card.png")
+        valid_plant_image_names.add(f"custom_{hid}.png")
 
     plugin_dir = base_dir / "plugins" / "plants"
     if plugin_dir.exists():
@@ -239,7 +313,10 @@ def cleanup_orphan_custom_assets(base_dir: Path) -> None:
         for path in res_dir.iterdir():
             if path.suffix.lower() != ".png":
                 continue
-            if path.name.startswith(("MyHybridPlant", "TankFlower", "testplant", "plant2", "custom_")) and path.name not in valid_card_names:
+            if path.name in BUILTIN_CARD_NAMES:
+                continue  # 内置卡片永不清理
+            # 自定义卡片统一为 custom_<ID>_card.png；孤儿即删
+            if path.name.startswith("custom_") and path.name.endswith("_card.png") and path.name not in valid_card_names:
                 path.unlink(missing_ok=True)
 
     plantimages_dir = base_dir / "plantimages"
@@ -247,5 +324,5 @@ def cleanup_orphan_custom_assets(base_dir: Path) -> None:
         for path in plantimages_dir.iterdir():
             if path.suffix.lower() != ".png":
                 continue
-            if path.name.startswith(("MyHybridPlant", "TankFlower", "testplant", "custom_")) and path.name not in valid_plant_image_names:
+            if path.name.startswith("custom_") and not path.name.endswith("_card.png") and path.name not in valid_plant_image_names:
                 path.unlink(missing_ok=True)

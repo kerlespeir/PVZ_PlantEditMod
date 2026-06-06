@@ -10,6 +10,7 @@ PlantsVSZombies_pyqt6/       ← 主项目（PyQt6 游戏 + C++ 插件系统）
 ├── main_window.py           ← 主窗口、菜单/游戏/编辑器场景切换
 ├── game_scene.py            ← 游戏核心逻辑（植物放置、僵尸生成、碰撞检测）
 ├── plant_editor.py          ← 植物编辑器场景（代码编辑、编译、预览）
+├── plant_library.py         ← 植物图鉴（浏览、勾选、删除植物）
 ├── syntax_highlighter.py    ← C++ 语法高亮器
 ├── image_composer.py        ← 组件贴图合成
 ├── plants/
@@ -25,7 +26,11 @@ PlantsVSZombies_pyqt6/       ← 主项目（PyQt6 游戏 + C++ 插件系统）
 │   ├── WallNut.cpp
 │   ├── PotatoMine.cpp
 │   ├── Repeater.cpp
-│   ├── DoubleSunShooter.cpp ← 示例自定义植物
+│   ├── DoubleSunShooter.cpp
+│   ├── PeaNut.cpp           ← 杂交植物：PeaHead + WallNutHead
+│   ├── SunNut.cpp           ← 杂交植物：SunHead + WallNutHead
+│   ├── MinePea.cpp          ← 杂交植物：PeaHead + PotatoMineHead
+│   ├── SunFortress.cpp      ← 杂交植物：WallNutHead + PeaHead + SunHead
 │   └── CMakeLists.txt
 ├── user_plants/             ← 玩家通过编辑器创建的植物源码
 ├── plugins/plants/          ← 编译产物（.dylib/.so），运行时自动加载
@@ -43,19 +48,21 @@ PlantsVSZombies_old/         ← 原始 Qt/C++ 版本（参考用）
 ## 快速开始
 
 ```bash
-# 1. 激活虚拟环境
-cd /Users/css/Documents/科研/PVZ
-source .venv/bin/activate
+# 1. 创建虚拟环境并安装依赖
+cd PVZ_PlantEditMod
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 
-# 2. 安装依赖
-pip install -r PlantsVSZombies_pyqt6/requirements.txt
+# 2. 编译 C++ 植物插件
+cd PlantsVSZombies_pyqt6
+cmake -S cpp_plants -B cpp_plants/build && cmake --build cpp_plants/build
 
-# 3. 编译 C++ 植物插件
-python3 PlantsVSZombies_pyqt6/build_cpp_plants.py
-
-# 4. 运行游戏
-python PlantsVSZombies_pyqt6/main.py
+# 3. 运行游戏
+../venv/bin/python main.py
 ```
+
+**一键启动**：双击 `PlantsVSZombies.command`（macOS）或执行 `run.sh`。
 
 ## 架构设计
 
@@ -103,9 +110,18 @@ PVZ_REGISTER_PLANT(MyPlant, 101, "MyPlant", "Peashooter.gif", 100, 7500)
 
 详细 API 文档见 `PlantsVSZombies_pyqt6/docs/CPP_PLANT_API.md`。
 
+## 植物图鉴与选中系统
+
+主菜单第四个按钮进入植物图鉴。功能：
+
+- **浏览**所有自定义植物和预编译杂交植物（带缩略图）
+- **勾选/取消**：每个植物有复选框，只有勾选的植物才会在游戏中出现
+- **内置植物**（SunFlower、Peashooter、WallNut、PotatoMine、Repeater）始终在游戏中出现
+- **点击缩略图**可编辑或删除自定义植物，杂交植物可直接删除
+
 ## 植物编辑器
 
-主菜单第三个按钮进入植物编辑器。编辑器提供：
+主菜单第二、三个按钮进入植物编辑器。编辑器提供：
 
 - 左侧代码编辑区，两个标签页：
   - `components.h`（只读）：展示所有可用组件的接口定义
@@ -118,7 +134,7 @@ PVZ_REGISTER_PLANT(MyPlant, 101, "MyPlant", "Peashooter.gif", 100, 7500)
 玩家通过组合预定义组件创建杂交植物。`HybridPlant` 基类自动计算总 HP、阳光花费和冷却时间，玩家写的是真实 C++ 代码：
 
 ```cpp
-#include "../cpp_core/components.h"
+#include "components.h"
 
 class TankFlower : public HybridPlant {
 public:
@@ -130,7 +146,7 @@ public:
     }
 };
 
-PVZ_REGISTER_HYBRID(TankFlower, 200, "TankFlower", "TankFlower.png")
+PVZ_REGISTER_HYBRID(TankFlower, 200, "TankFlower")
 ```
 
 ### 可用组件
@@ -162,7 +178,15 @@ PVZ_REGISTER_HYBRID(TankFlower, 200, "TankFlower", "TankFlower.png")
 |---|---|---|---|---|
 | 1 | SunFlower | 50 | 7.5s | 每 1000 tick 产阳光 |
 | 2 | Peashooter | 100 | 7.5s | 每 200 tick 射 1 发豌豆 |
-| 3 | WallNut | 200 | 30s | 4000 HP，按血量切换受损动画 |
+| 3 | WallNut | 50 | 30s | 4000 HP，按血量切换受损动画 |
 | 4 | PotatoMine | 25 | 30s | 1500 tick 后成熟，接触僵尸爆炸 |
 | 5 | Repeater | 200 | 7.5s | 每 200 tick 射 2 发豌豆 |
-| 100 | DoubleSunShooter | 300 | 7.5s | 产阳光 + 双发豌豆 + 低血量自爆（示例） |
+
+## 预编译杂交植物
+
+| ID | 名称 | 组合 | 描述 |
+|---|---|---|---|
+| 201 | PeaNut | PeaHead + WallNutHead | 射豌豆的坚果墙 |
+| 202 | SunNut | SunHead + WallNutHead | 产阳光的坚果墙 |
+| 203 | MinePea | PeaHead + PotatoMineHead | 边射边蓄力的地雷 |
+| 205 | SunFortress | WallNutHead + PeaHead + SunHead | 三位一体堡垒 |

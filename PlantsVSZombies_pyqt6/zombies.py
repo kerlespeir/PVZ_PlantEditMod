@@ -41,6 +41,7 @@ class Zombie(QLabel):
         self.my = 0
         self.if_eat = False
         self.if_die = False
+        self.die_ticks = 0
         self.movie: QMovie | None = None
         self.timer = QTimer(self)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
