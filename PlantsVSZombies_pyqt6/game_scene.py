@@ -23,7 +23,7 @@ class GameScene(QWidget):
         self.base_dir = base_dir
         self.setFixedSize(960, 720)
 
-        self.sun_num = 100
+        self.sun_num = 500
         self.default_sun_sequence = [50, 100, 50, 25, 200]
         self.default_cooldown_sequence = [7500, 7500, 30000, 30000, 7500]
         self.default_name_sequence = ["SunFlower", "Peashooter", "WallNut", "PotatoMine", "Repeater"]
