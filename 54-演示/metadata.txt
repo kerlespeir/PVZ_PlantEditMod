@@ -1,0 +1,7 @@
+# 视频拆分元信息
+original_filename=54-演示.mp4
+original_size=298058217
+original_sha256=15a7d1ba85476b7bd6b8b5e509596cd8ba015c78a51f667a3605245a9886438f
+chunk_size_mb=95
+total_chunks=3
+split_date=2026-06-24 15:02:55
