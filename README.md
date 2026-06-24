@@ -47,17 +47,28 @@ PlantsVSZombies_old/         ← 原始 Qt/C++ 版本（参考用）
 
 ## 快速开始
 
+A.采用conda
+```bash
+# 1. 创建并激活 Conda 环境
+conda create -n PVZenv python=3.10 -y
+conda activate PVZenv
+# 2. 安装项目依赖
+pip install -r requirements.txt
+# 3. 运行项目
+cd PVZ_PlantEditMod
+python ./PlantsVSZombies_pyqt6/main.py
+```
+
+B.采用venv
 ```bash
 # 1. 创建虚拟环境并安装依赖
 cd PVZ_PlantEditMod
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-
 # 2. 编译 C++ 植物插件
 cd PlantsVSZombies_pyqt6
 cmake -S cpp_plants -B cpp_plants/build && cmake --build cpp_plants/build
-
 # 3. 运行游戏
 ../venv/bin/python main.py
 ```
